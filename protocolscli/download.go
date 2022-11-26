@@ -6,93 +6,52 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 
-	"cloudeng.io/cmdutil/flags"
 	"cloudeng.io/errors"
 	"github.com/cosnicolaou/protocolsio/api"
 )
 
-type checkpoint struct {
-	CurrentPage int
-	TotalPages  int
-	Pages       flags.IntRangeSpec
-	PageSize    int
-	Filter      string
-	FieldOrder  string
-	Order       string
-	Total       int
-	Pagination  *api.Pagination
-	Files       []string
+type ProtocolsDownloadFlags struct {
+	ProtocolsListFlags
+	CacheDir       string `subcmd:"cachepath,,'location of cache of download protocol objects that overides that specified in the global yaml config'"`
+	CheckpointFile string `subcmd:"resume,,checkpoint file to resume download from"`
 }
 
-func newCheckpointFromFlags(fv *ProtocolsListFlags) (*checkpoint, error) {
-	errs := errors.M{}
-	errs.Append(flags.OneOf(fv.Filter).Validate("public", ProtocolListFilters()...))
-	errs.Append(flags.OneOf(fv.Order).Validate("activity", ProtocolListOrderField()...))
-	errs.Append(flags.OneOf(fv.Sort).Validate("asc", "desc"))
-	if err := errs.Err(); err != nil {
-		return nil, err
+func protocolsDownloadCmd(ctx context.Context, values interface{}, args []string) error {
+	fv := values.(*ProtocolsDownloadFlags)
+	dir := fv.CacheDir
+	if len(dir) == 0 {
+		dir = globalConfig.Cache.Path
 	}
-	return &checkpoint{
-		CurrentPage: 0,
-		TotalPages:  0,
-		Pages:       fv.Pages,
-		PageSize:    fv.PageSize,
-		Filter:      fv.Filter,
-		FieldOrder:  fv.Order,
-		Order:       fv.Sort,
-		Total:       fv.Total,
-	}, nil
-}
-
-func (cp *checkpoint) initHeaders(v *url.Values) {
-	v.Add("page_size", strconv.Itoa(cp.PageSize))
-	v.Add("filter", string(cp.Filter))
-	v.Add("field_order", string(cp.FieldOrder))
-	v.Add("order", string(cp.Order))
-	v.Set("page_id", strconv.Itoa(cp.Pages.From))
-}
-
-func (cp *checkpoint) resetFiles() {
-	cp.Files = make([]string, 0, 20)
-}
-
-func (cp *checkpoint) appendFile(file string) {
-	cp.Files = append(cp.Files, file)
-}
-
-func (cp *checkpoint) update(p *api.Pagination) (bool, int, error) {
-	done := p.Done()
-	cp.CurrentPage = int(p.CurrentPage)
-	cp.TotalPages = int(p.TotalPages)
-	if done {
-		return done, 0, nil
+	if len(dir) == 0 {
+		return fmt.Errorf("no cache path specified either via --cachepath or via the global yaml config file")
 	}
-	u, err := url.Parse(p.NextPage)
+	saver, err := newItemSaver(dir)
 	if err != nil {
-		return done, 0, err
+		return err
 	}
-	np := u.Query().Get("page_id")
-	if len(np) == 0 {
-		return done, 0, fmt.Errorf("%v: failed to find page_id parameter in %v: %#v", p.NextPage, u.String(), p)
+	var cp checkpoint
+	if len(fv.CheckpointFile) != 0 {
+		data, err := os.ReadFile(fv.CheckpointFile)
+		if err != nil {
+			return fmt.Errorf("failed to read checkpoint: %v", err)
+		}
+		if err := json.Unmarshal(data, &cp); err != nil {
+			return fmt.Errorf("failed to decode checkpoint file: %v: %v", fv.CheckpointFile, err)
+		}
+	} else {
+		cp, err = newCheckpointFromFlags(&fv.ProtocolsListFlags)
+		if err != nil {
+			return err
+		}
 	}
-	npi, err := strconv.Atoi(np)
-	if err != nil {
-		return done, 0, fmt.Errorf("failed to parse %q: %v", np, err)
-	}
-	cp.Pages.From = npi
-	cp.Pagination = p
-	return done, npi, err
-}
-
-func (cp *checkpoint) filename() string {
-	return fmt.Sprintf("checkpoint_%05v_%05v", cp.CurrentPage, cp.TotalPages)
+	return getProtocols(ctx, cp, saver)
 }
 
 type itemSaver struct {
@@ -114,7 +73,12 @@ func (is *itemSaver) encodeAndWrite(enc *json.Encoder, buf *bytes.Buffer, item a
 		fmt.Printf("%s: encode error: %v\n", file, err)
 		return err
 	}
-	err := os.WriteFile(file, buf.Bytes(), 0600)
+	return is.write(buf.Bytes(), filename)
+}
+
+func (is *itemSaver) write(buf []byte, filename string) error {
+	file := filepath.Join(is.root, filename)
+	err := os.WriteFile(file, buf, 0600)
 	if err != nil {
 		fmt.Printf("%s: write error: %v\n", file, err)
 		return err
@@ -123,16 +87,78 @@ func (is *itemSaver) encodeAndWrite(enc *json.Encoder, buf *bytes.Buffer, item a
 	return nil
 }
 
-func (is *itemSaver) Process(items []api.Item, cp *checkpoint) error {
+func (is *itemSaver) fileVersion(filename string) (int, bool, error) {
+	file := filepath.Join(is.root, filename)
+	buf, err := os.ReadFile(file)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, false, nil
+		}
+		fmt.Printf("%s: read error: %v\n", file, err)
+		return 0, false, err
+	}
+	var payload api.Payload
+	if err := json.Unmarshal(buf, &payload); err != nil {
+		fmt.Printf("%s: decode error: %v\n", file, err)
+		return 0, true, err
+	}
+	var protocol api.Protocol
+	if err := json.Unmarshal(payload.Payload, &protocol); err != nil {
+		fmt.Printf("%s: decode error: %v\n", file, err)
+		return 0, true, err
+	}
+	return protocol.VersionID, true, nil
+}
+
+func (is *itemSaver) Process(ctx context.Context, protocols api.ListProtocolsV3, cp checkpoint) error {
 	cp.resetFiles()
 	errs := errors.M{}
 	buf := &bytes.Buffer{}
 	enc := json.NewEncoder(buf)
-	for _, item := range items {
+	for _, item := range protocols.Items {
 		is.totalItems++
-		file := fmt.Sprintf("%06d", item.ID)
+		var p api.Protocol
+		if err := json.Unmarshal(item, &p); err != nil {
+			errs.Append(err)
+			continue
+		}
+		filebase := fmt.Sprintf("%06d", p.ID)
+		file := filebase + ".list"
 		cp.appendFile(file)
-		if err := is.encodeAndWrite(enc, buf, item, file); err != nil {
+		tmp := struct {
+			Extras json.RawMessage
+			Item   json.RawMessage
+		}{
+			Extras: protocols.Extras,
+			Item:   item,
+		}
+		if err := is.encodeAndWrite(enc, buf, tmp, file); err != nil {
+			errs.Append(err)
+			continue
+		}
+
+		// Fetch the protocol if it has not already been downloaded
+		// or there's a newer version.
+		file = filebase + ".detail"
+		version, exists, err := is.fileVersion(file)
+		if err != nil {
+			errs.Append(err)
+			continue
+		}
+		if exists && version >= p.VersionID {
+			fmt.Printf("%v: [current] (%v >= %v)\n", file, version, p.VersionID)
+			continue
+		}
+		fmt.Printf("%v: [new] (%v, %v < %v)\n", file, exists, version, p.VersionID)
+		// Issue a get for this individual protocol since the
+		// protocol struct returned by List is incomplete, in particular
+		// it does not contain the description field.
+		_, body, err := getProtocol(ctx, strconv.Itoa(int(p.ID)))
+		if err != nil {
+			errs.Append(err)
+			continue
+		}
+		if err := is.write(body, file); err != nil {
 			errs.Append(err)
 			continue
 		}
@@ -140,6 +166,6 @@ func (is *itemSaver) Process(items []api.Item, cp *checkpoint) error {
 	if err := errs.Err(); err != nil {
 		return err
 	}
-	// only write the checkpoint if every completed successfully.
+	// only write the checkpoint if every download operation completed successfully.
 	return is.encodeAndWrite(enc, buf, cp, cp.filename())
 }

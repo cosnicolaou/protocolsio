@@ -7,13 +7,15 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
 
 	"cloudeng.io/cmdutil/signals"
 	"cloudeng.io/cmdutil/subcmd"
+	"github.com/cosnicolaou/protocolsio/protocolscli/glean"
 )
 
 type GlobalFlags struct {
-	Config string `subcmd:"config,$HOME/.protocolsio.yaml,'config file'"`
+	Config string `subcmd:"config,$HOME/.protocolsio.yaml,'protocolsio config file'"`
 }
 
 var (
@@ -22,8 +24,17 @@ var (
 	cmdSet       *subcmd.CommandSetYAML
 )
 
-func init() {
-	cmdSet = subcmd.MustFromYAML(`name: protocolsio
+func indent(indent string, document string) string {
+	out := strings.Builder{}
+	for _, line := range strings.Split(document, "\n") {
+		out.WriteString(indent)
+		out.WriteString(line)
+		out.WriteByte('\n')
+	}
+	return out.String()
+}
+
+var yamlSpec = `name: protocolsio
 summary: utility for accessing protocols.io via its API
 commands:
   - name: protocols
@@ -33,8 +44,15 @@ commands:
         summary: list protocols
       - name: download
         summary: download protocols
-`)
+      - name: get
+        summary: get a specific protocol
+        arguments:
+          - id
+          - ...
+` + indent("  ", glean.SubcmdYAML)
 
+func init() {
+	cmdSet = subcmd.MustFromYAML(yamlSpec)
 	globals := subcmd.GlobalFlagSet()
 	globals.MustRegisterFlagStruct(&globalFlags, nil, nil)
 
@@ -44,6 +62,10 @@ commands:
 	cmdSet.Set("protocols", "download").RunnerAndFlags(
 		protocolsDownloadCmd, subcmd.MustRegisteredFlagSet(&ProtocolsDownloadFlags{}))
 
+	cmdSet.Set("protocols", "get").RunnerAndFlags(
+		protocolsGetCmd, subcmd.MustRegisteredFlagSet(&ProtocolsGetFlags{}))
+
+	glean.ConfigureCmdSet(cmdSet)
 	cmdSet.WithGlobalFlags(globals)
 	cmdSet.WithMain(mainWrapper)
 }

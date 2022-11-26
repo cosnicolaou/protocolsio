@@ -26,6 +26,7 @@ type Config struct {
 	}
 	Endpoints struct {
 		ListProtocolsV3 string `yaml:"list_protocols_v3"`
+		GetProtocolV4   string `yaml:"get_protocol_v4"`
 	}
 }
 
