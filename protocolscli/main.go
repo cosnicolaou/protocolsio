@@ -81,5 +81,6 @@ func mainWrapper(ctx context.Context, cmdRunner func(ctx context.Context) error)
 
 func main() {
 	ctx, _ := signals.NotifyWithCancel(context.Background(), os.Interrupt)
+	ctx, _ = signals.NotifyWithCancel(ctx, os.Interrupt, os.Kill)
 	cmdSet.MustDispatch(ctx)
 }

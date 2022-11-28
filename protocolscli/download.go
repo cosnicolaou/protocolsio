@@ -97,13 +97,8 @@ func (is *itemSaver) fileVersion(filename string) (int, bool, error) {
 		fmt.Printf("%s: read error: %v\n", file, err)
 		return 0, false, err
 	}
-	var payload api.Payload
-	if err := json.Unmarshal(buf, &payload); err != nil {
-		fmt.Printf("%s: decode error: %v\n", file, err)
-		return 0, true, err
-	}
-	var protocol api.Protocol
-	if err := json.Unmarshal(payload.Payload, &protocol); err != nil {
+	protocol, err := api.ParsePayload[api.Protocol](buf)
+	if err != nil {
 		fmt.Printf("%s: decode error: %v\n", file, err)
 		return 0, true, err
 	}
