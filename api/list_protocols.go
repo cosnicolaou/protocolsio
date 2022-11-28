@@ -4,7 +4,9 @@
 
 package api
 
-import "encoding/json"
+import (
+	"encoding/json"
+)
 
 type ListProtocolsV3 struct {
 	Extras       json.RawMessage
@@ -20,10 +22,29 @@ type Payload struct {
 	StatusCode int             `json:"status_code"`
 }
 
+type Creator struct {
+	Name       string
+	Username   string
+	Affilation string
+}
+
 type Protocol struct {
 	ID          int64  `json:"id"`
 	URI         string `json:"uri"`
+	URL         string `json:"url"`
 	Title       string `json:"title"`
 	Description string `json:"description"`
 	VersionID   int    `json:"version_id"`
+	CreatedOn   int    `json:"created_on"`
+	Creator     Creator
+}
+
+func ParsePayload[T any](buf []byte) (T, error) {
+	var t T
+	var payload Payload
+	if err := json.Unmarshal(buf, &payload); err != nil {
+		return t, err
+	}
+	err := json.Unmarshal(payload.Payload, &t)
+	return t, err
 }

@@ -16,26 +16,6 @@ import (
 type ProtocolsGetFlags struct{}
 
 func protocolsGetCmd(ctx context.Context, values interface{}, args []string) error {
-	/*
-		buf, err := os.ReadFile("f")
-		if err != nil {
-			panic(err)
-		}
-		var p api.Protocol
-		if err := json.Unmarshal(buf, &p); err != nil {
-			panic(err)
-		}
-
-		fmt.Printf("%#v\n", p)
-		var a map[string]interface{}
-		if err := json.Unmarshal(buf, &a); err != nil {
-			panic(err)
-		}
-		for k := range a {
-			fmt.Printf("%v\n", k)
-		}
-	return nil*/
-
 	errs := errors.M{}
 	for _, id := range args {
 		_, body, err := getProtocol(ctx, id)
